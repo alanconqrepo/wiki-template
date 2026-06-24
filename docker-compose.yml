@@ -1,0 +1,119 @@
+# /opt/wikijs/docker-compose.yml
+
+services:
+
+  # =============================================
+  #  NGINX — Reverse Proxy
+  # =============================================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: wikijs-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - wiki-net
+    depends_on:
+      wikijs:
+        condition: service_healthy
+
+  # =============================================
+  #  WIKI.JS
+  # =============================================
+  wikijs:
+    image: ghcr.io/requarks/wiki:2
+    container_name: wikijs
+    restart: unless-stopped
+    environment:
+      DB_TYPE: postgres
+      DB_HOST: wikijs-db
+      DB_PORT: "5432"
+      DB_NAME: ${WIKIJS_DB_NAME}
+      DB_USER: ${WIKIJS_DB_USER}
+      DB_PASS: ${WIKIJS_DB_PASS}
+    volumes:
+      # Git Sync — backup éditorial + préparation migration v3
+      - ./wikijs/git-key/wikijs-git-key:/home/node/.ssh/id_ed25519:ro
+      - ./wikijs/git-key/known_hosts:/home/node/.ssh/known_hosts:ro
+      - wikijs_git_repo:/wiki/data/repo
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      wikijs-db:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - wiki-net
+
+  # =============================================
+  #  POSTGRESQL — Wiki.js
+  # =============================================
+  wikijs-db:
+    image: postgres:16-alpine
+    container_name: wikijs-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${WIKIJS_DB_NAME}
+      POSTGRES_USER: ${WIKIJS_DB_USER}
+      POSTGRES_PASSWORD: ${WIKIJS_DB_PASS}
+    volumes:
+      - wikijs_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WIKIJS_DB_USER} -d ${WIKIJS_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wiki-net
+
+  # =============================================
+  #  ELASTICSEARCH — Search Engine
+  # =============================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.27
+    container_name: wikijs-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=${ES_JAVA_OPTS:--Xms1g -Xmx1g}"
+      - xpack.security.enabled=false
+      - xpack.ml.enabled=false
+      - cluster.name=wikijs-search
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    networks:
+      - wiki-net
+
+# =============================================
+#  VOLUMES
+# =============================================
+volumes:
+  wikijs_db_data:
+  es_data:
+  wikijs_git_repo:
+
+# =============================================
+#  NETWORK
+# =============================================
+networks:
+  wiki-net:
+    name: wiki-net
+    external: true
